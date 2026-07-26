@@ -254,6 +254,95 @@ const SceneBuilder = (() => {
     update();
   }
 
+  // =========================================================================
+  // DEBUG INSPECTOR — click su un pezzo del modello 3D per identificarlo
+  // e sapere quale funzione/riga di scene.js lo ha creato.
+  // Attiva/disattiva con il tasto "D" (vedi console per conferma).
+  // =========================================================================
+  let debugEnabled = true;
+  let raycaster, mouse, debugTooltip;
+
+  // Attacca un'etichetta informativa a un oggetto 3D (o al suo Group).
+  // La label si "eredita" verso l'alto: se clicchi su una mesh figlia
+  // senza tag, risaliamo ai genitori finché troviamo un debugInfo.
+  function debugTag(object, info) {
+    object.userData.debugInfo = info;
+    return object;
+  }
+
+  function findDebugInfo(object) {
+    let o = object;
+    while (o) {
+      if (o.userData && o.userData.debugInfo) return o.userData.debugInfo;
+      o = o.parent;
+    }
+    return null;
+  }
+
+  function setupDebugInspector(canvas) {
+    raycaster = new THREE.Raycaster();
+    mouse = new THREE.Vector2();
+
+    debugTooltip = document.createElement('div');
+    debugTooltip.style.cssText =
+      'position:fixed;pointer-events:none;z-index:9999;display:none;' +
+      'background:#1d2530;color:#eef0f3;border:1px solid #4fb6e8;' +
+      'border-radius:6px;padding:8px 11px;max-width:280px;line-height:1.5;' +
+      'font:12px "IBM Plex Mono",monospace;box-shadow:0 4px 14px rgba(0,0,0,.45);';
+    document.body.appendChild(debugTooltip);
+
+    // Distinguiamo un CLICK (per ispezionare) da un DRAG (per orbitare
+    // la camera, già gestito da setupOrbitControls): se il puntatore si
+    // sposta più di qualche pixel tra down e up, non è un click.
+    let downX = 0, downY = 0, wasClick = false;
+    canvas.addEventListener('pointerdown', (e) => {
+      downX = e.clientX; downY = e.clientY; wasClick = true;
+    });
+    canvas.addEventListener('pointermove', (e) => {
+      if (Math.hypot(e.clientX - downX, e.clientY - downY) > 4) wasClick = false;
+    });
+    canvas.addEventListener('pointerup', (e) => {
+      if (debugEnabled && wasClick) handleDebugClick(e, canvas);
+    });
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key.toLowerCase() === 'd') {
+        debugEnabled = !debugEnabled;
+        debugTooltip.style.display = 'none';
+        console.log('[debug inspector] ' + (debugEnabled ? 'ATTIVATO' : 'DISATTIVATO') + ' — premi "D" per alternare');
+      }
+    });
+
+    console.log('%c[debug inspector] attivo — clicca un pezzo del modello per vedere in console quale funzione/riga di scene.js lo ha creato. Premi "D" per disattivare.', 'color:#5fb88a');
+  }
+
+  function handleDebugClick(e, canvas) {
+    const rect = canvas.getBoundingClientRect();
+    mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(mouse, camera);
+
+    const hits = raycaster.intersectObjects(scene.children, true);
+    if (!hits.length) { debugTooltip.style.display = 'none'; return; }
+
+    const info = findDebugInfo(hits[0].object);
+    if (!info) {
+      console.log('[debug inspector] Oggetto non etichettato (mesh interna senza tag):', hits[0].object);
+      debugTooltip.style.display = 'none';
+      return;
+    }
+
+    console.log(`[debug inspector] ${info.label}\n  → creato da: ${info.fn}\n  → posizione nel file: ${info.lineHint}`);
+
+    debugTooltip.innerHTML =
+      `<b style="color:#e7b34b">${info.label}</b><br>` +
+      `${info.fn}<br>` +
+      `<span style="color:#9aa1ad">${info.lineHint}</span>`;
+    debugTooltip.style.left = (e.clientX + 14) + 'px';
+    debugTooltip.style.top  = (e.clientY + 14) + 'px';
+    debugTooltip.style.display = 'block';
+  }
+
   // -----------------------------------------------------------------------
   function init(canvas) {
     scene = new THREE.Scene();
@@ -317,9 +406,11 @@ const SceneBuilder = (() => {
       );
       const mat = isSwappable ? pvcMat.clone() : pvcMat;
       const tube = makeTube(nodes[a], nodes[b], tubeRadius, mat);
-      if (a==='port3'  && b==='valve5') swappableTubes.afferent = tube;
-      if (a==='valve5' && b==='port4')  swappableTubes.efferent = tube;
-      if (a==='port2'  && b==='port1')  swappableTubes.middle   = tube;
+      let tubeLabel = `Tubo di collegamento (${a} → ${b})`;
+      if (a==='port3'  && b==='valve5') { swappableTubes.afferent = tube; tubeLabel = 'Tubo arteriola AFFERENTE (P3 → Valvola 5)'; }
+      if (a==='valve5' && b==='port4')  { swappableTubes.efferent = tube; tubeLabel = 'Tubo arteriola EFFERENTE (Valvola 5 → P4)'; }
+      if (a==='port2'  && b==='port1')  { swappableTubes.middle   = tube; tubeLabel = 'Tubo centrale CARDIOVASCOLARE (P2 → P1)'; }
+      debugTag(tube, { label: tubeLabel, fn: 'makeTube()', lineHint: 'funzione righe 39-50 · creazione nel ciclo "segments" righe ~297-324' });
       apparatus.add(tube);
     });
 
@@ -335,6 +426,11 @@ const SceneBuilder = (() => {
     const v5=makeValve(nodes.valve5, tubeRadius*1.3, true, 0xe7b34b);
     apparatus.add(v1,v2,v3,v4,v5);
     valveGroups = { v1,v2,v3,v4,v5 };
+    debugTag(v1, { label: 'Valvola 1 (bypass parallelo)',            fn: 'makeValve()', lineHint: 'funzione righe 59-78 · istanziata riga ~331' });
+    debugTag(v2, { label: 'Valvola 2',                                fn: 'makeValve()', lineHint: 'funzione righe 59-78 · istanziata riga ~332' });
+    debugTag(v3, { label: 'Valvola 3 (ramo renale sinistro)',         fn: 'makeValve()', lineHint: 'funzione righe 59-78 · istanziata riga ~333' });
+    debugTag(v4, { label: 'Valvola 4 (ramo renale destro)',           fn: 'makeValve()', lineHint: 'funzione righe 59-78 · istanziata riga ~334' });
+    debugTag(v5, { label: 'Valvola 5 / Glomerulo',                    fn: 'makeValve()', lineHint: 'funzione righe 59-78 · istanziata riga ~335' });
 
     apparatus.add(makeLabel('1', valve1Pos, tubeRadius));
     apparatus.add(makeLabel('2', nodes.valve2, tubeRadius));
@@ -359,18 +455,25 @@ const SceneBuilder = (() => {
 
     const pumpPos = new THREE.Vector3().lerpVectors(nodes.branchLeftTop,nodes.topMid,0.5).add(new THREE.Vector3(0,0.35,0));
     const pump = makePump(pumpPos);
+    debugTag(pump, { label: 'Pompa a portata fissa (Q = 15 mL/s)', fn: 'makePump()', lineHint: 'funzione righe 87-103' });
     apparatus.add(pump);
     pumpRing = pump.userData.ring;
     scene.add(apparatus);
 
     const funnelPos = new THREE.Vector3().lerpVectors(nodes.branchRightTop,nodes.topRight,0.6);
-    scene.add(makeFunnel(funnelPos));
+    const funnelObj = makeFunnel(funnelPos);
+    debugTag(funnelObj, { label: 'Imbuto di riempimento circuito', fn: 'makeFunnel()', lineHint: 'funzione righe 105-127' });
+    scene.add(funnelObj);
     const faucetPos = funnelPos.clone().add(new THREE.Vector3(0,1.5,0));
-    scene.add(makeFaucet(faucetPos));
+    const faucetObj = makeFaucet(faucetPos);
+    debugTag(faucetObj, { label: 'Rubinetto di riempimento', fn: 'makeFaucet()', lineHint: 'funzione righe 129-145' });
+    scene.add(faucetObj);
     scene.add(makeWaterStream(faucetPos.clone().add(new THREE.Vector3(0,-0.35,0)), funnelPos));
 
     const cylPos = new THREE.Vector3(nodes.valve5.x,-3.2,nodes.valve5.z);
-    scene.add(makeMeasuringCylinder(cylPos));
+    const cylObj = makeMeasuringCylinder(cylPos);
+    debugTag(cylObj, { label: 'Cilindro graduato (raccolta filtrato)', fn: 'makeMeasuringCylinder()', lineHint: 'funzione righe 199-223' });
+    scene.add(cylObj);
     const dropTop = new THREE.Vector3(nodes.valve5.x, nodes.valve5.y-0.25, nodes.valve5.z);
     const dropBot = new THREE.Vector3(nodes.valve5.x, cylPos.y+cylinderMaxHeight+0.05, nodes.valve5.z);
     const dropTubeMat = new THREE.MeshStandardMaterial({ color:0xece7da, roughness:0.55, transparent:true, opacity:0.6 });
@@ -379,6 +482,7 @@ const SceneBuilder = (() => {
     scene.add(makeDrip(new THREE.Vector3(nodes.valve5.x, dripY, nodes.valve5.z)));
 
     setupOrbitControls(canvas);
+    setupDebugInspector(canvas);
     window.addEventListener('resize', () => onResize(canvas));
     onResize(canvas);
     animate();
